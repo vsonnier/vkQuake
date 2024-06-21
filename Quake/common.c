@@ -1890,6 +1890,10 @@ byte *COM_LoadFile (const char *path, unsigned int *path_id)
 
 byte *COM_LoadMallocFile_TextMode_OSPath (const char *path, long *len_out)
 {
+// vso -- original Quakespasm version is using COM_filelength() which _should_ be OK
+// for text files the way it is calling fseek / ftell functions, but...
+#if 0 
+	
 	FILE *f;
 	byte *data;
 	long  len, actuallen;
@@ -1929,7 +1933,84 @@ byte *COM_LoadMallocFile_TextMode_OSPath (const char *path, long *len_out)
 	if (len_out != NULL)
 		*len_out = actuallen;
 	fclose (f);
+
 	return data;
+
+#else // original Quakespasm version:
+	// ericw -- this is used by Host_Loadgame_f. Translate CRLF to LF on load games,
+	// othewise multiline messages have a garbage character at the end of each line.
+	// TODO: could handle in a way that allows loading CRLF savegames on mac/linux
+	// without the junk characters appearing.
+	FILE *f = fopen (path, "rt");
+
+	if (f == NULL)
+		return NULL;
+//
+#define READ_BUFFER_INITIAL_SIZE (128 * 1024)
+
+	byte *read_buffer = (byte *)Mem_AllocNonZero (READ_BUFFER_INITIAL_SIZE);
+
+	if (read_buffer == NULL)
+	{
+		fclose (f);
+		return NULL;
+	}
+	qfileofs_t read_buffer_size = READ_BUFFER_INITIAL_SIZE;
+
+	qfileofs_t next_read_buffer_pos = 0;
+
+	bool read_is_complete = false;
+
+	// vso -- since we are using Text mode which alters the file while reading,
+	// i don't want to trust COM_fileLength. Here, i only use fread() iteratively
+	// instead, until reaching the end.
+	while (!read_is_complete)
+	{
+		// attempt read up to the remaining room in the buffer, minus the room for the null-terminator.
+		qfileofs_t free_bytes_in_read_buffer = read_buffer_size - next_read_buffer_pos - 1;
+
+		size_t actual_read_bytes_in_read_buffer = fread (read_buffer + next_read_buffer_pos, 1, (size_t)free_bytes_in_read_buffer, f);
+
+		// bail out on error
+		if (ferror (f))
+		{
+			fclose (f);
+			Mem_Free (read_buffer);
+			return NULL;
+		}
+		// increment read buffer
+		next_read_buffer_pos += actual_read_bytes_in_read_buffer;
+
+		// check end of file
+		if (feof (f))
+		{
+			read_is_complete = true;
+		}
+		else
+		{
+			// we are not done yet, realloc the buffer * 2 to continue reading
+			byte *read_buffer_before_realloc = read_buffer;
+			read_buffer_size *= 2;
+			read_buffer = (byte *)Mem_Realloc (read_buffer_before_realloc, read_buffer_size);
+
+			if (read_buffer == NULL)
+			{
+				fclose (f);
+				Mem_Free (read_buffer_before_realloc);
+				return NULL;
+			}
+		}
+	} // end while not fully read yet
+
+	read_buffer[next_read_buffer_pos] = '\0';
+
+	if (len_out != NULL)
+		*len_out = next_read_buffer_pos + 1;
+
+	fclose (f);
+
+	return read_buffer;
+#endif
 }
 
 const char *COM_ParseIntNewline (const char *buffer, int *value)
